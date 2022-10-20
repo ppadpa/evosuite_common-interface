@@ -1,0 +1,202 @@
+===================== 1. COMMAND LINE =====================
+=== 基础
+-- 先compile自己的java class/project
+%mvn compile
+
+-- 然后export evosuite jar位置
+%export EVOSUITE="java -jar $(pwd)/evosuite-1.0.6.jar"
+
+-- 运行
+%java -jar $EVOSUITE -class tutorial.Stack -projectCP target/classes
+	-> evosuite会多2个文件
+		evosuite-tests/tutorial/Stack_ESTest.java
+		evosuite-tests/tutorial/Stack_ESTest_scaffolding.java
+
+-- 拷贝下载需要的jar， 会把需要的Junit和hamcrest-core下载到target/dependenecy
+%mvn dependency:copy-dependencies
+
+-- 设置对应的jar位置
+%export CLASSPATH=target/classes:../evosuite-standalone-runtime-1.2.0.jar:evosuite-tests:target/dependency/junit-4.12.jar:target/dependency/hamcrest-core-1.3.jar:target/dependency/slf4j-api-2.0.3.jar:target/dependency/slf4j-simple-2.0.3.jar
+
+-- compile test
+% javac evosuite-tests/tutorial/*.java
+	-> 会在 evosuite-tests/tutorial/底下生成.class文件
+
+--运行tests
+% java org.junit.runner.JUnitCore tutorial.Stack_ESTest
+	-> 应该看到这些：JUnit version 4.12 ...
+				OK (5 tests)
+
+-- test 生成可以用更弱的criteria: 只要branch 100%就停
+% java -jar $EVOSUITE -class tutorial.Stack -projectCP target/classes -criterion branch
+
+-- other example
+% java -jar $EVOSUITE -class tutorial.Stack -projectCP target/classes -Dsearch_budget=20 -Dminimize=false -Dassertion_strategy=all
+% java -jar $EVOSUITE -class tutorial.Stack -projectCP target/classes -Dsearch_budget=20 -Dminimize=false -Dassertion_strategy=all
+	// Dassertion_strategy
+
+
+== configs in a file
+通过文件(evosuite-files/evosuite.properties)，以后每次生成tests可以复用
+// 怎么生成：
+% java -jar $EVOSUITE -setup target/classes
+// 怎么用
+% java -jar $EVOSUITE -class tutorial.Stack
+
+
+=== 利用现成的tests
+-- 先build, maven会生成target/test-classes/tutorial/StackTest.class.
+% mvn test 
+
+-- evosuite来获得coverage
+% java -jar $EVOSUITE -measureCoverage -class tutorial.Stack -Djunit=tutorial.StackTest -criterion branch -projectCP target/classes:target/test-classes
+	// sample output: 
+		* Total number of covered goals: 3 / 7
+		* Total coverage: 43%
+
+-- 让evosuite只对剩下4个没有被cover的branch生成test
+% java -jar $EVOSUITE -class tutorial.Stack -Djunit=tutorial.StackTest -projectCP target/classes:target/test-classes -criterion branch
+
+=== target多个class
+-- list class
+% java -jar $EVOSUITE -listClasses -target target/classes
+
+-- target all classes in a classpath entry
+% java -jar $EVOSUITE -target target/classes
+
+-- target all classes in a package (tutorial)
+% java -jar $EVOSUITE -prefix tutorial
+
+
+===================== 2. MAVEN =====================
+== Setting up Maven projects to run EvoSuite tests
+-- 把这个加在pom.xml底下
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.evosuite.plugins</groupId>
+        <artifactId>evosuite-maven-plugin</artifactId>
+        <version>1.0.6</version>
+      </plugin>
+    </plugins>
+  </build>
+
+  <pluginRepositories>
+	  <pluginRepository>
+	    <id>EvoSuite</id>
+	    <name>EvoSuite Repository</name>
+	    <url>http://www.evosuite.org/m2</url>
+	  </pluginRepository>
+	</pluginRepositories>
+
+-- 下载
+% mvn evosuite:help
+
+-- 设置param
+% mvn evosuite:help -Ddetail=true -Dgoal=generate
+
+-- 生成test (生成的都在.evosuite/best-tests/(classname:tutorial)) N个.java文件, N个scaffolding文件
+% mvn evosuite:generate
+---- 也可以多核parallel生成tests
+% mvn -Dcores=4 evosuite:generate
+	-> sample output:
+		[INFO] Total number of classes in the project: 4
+		[INFO] Number of classes in the project that are testable: 4
+		[INFO] Number of generated test suites: 4
+
+-- 看我们生成了啥 
+% mvn evosuite:info
+
+-- 把生成tests export到src/test/java
+% mvn evosuite:export
+
+-- 运行
+----- 因为需要runtime，吧这个加到pom.xml
+<dependency>
+  <groupId>org.evosuite</groupId>
+  <artifactId>evosuite-standalone-runtime</artifactId>
+  <version>1.0.6</version>
+  <scope>test</scope>
+</dependency>
+----- 
+% mvn test
+
+-- 如果不希望generated test在src/test/java 怎么办
+----- 可以通过这种方法找pram
+% mvn evosuite:help -Ddetail=true -Dgoal=export
+	-> sample output: Available parameters:
+					  targetFolder (Default: src/test/java)
+					    User property: targetFolder
+
+----- 改target folder
+% mvn evosuite:export -DtargetFolder=src/test/evosuite
+----- 或者在pom.xml里加
+	<properties>
+      <targetFolder>src/test/evosuite</targetFolder>
+    </properties>
+
+---- 在pom.xml里指定新的test location (under <build> part)
+<plugin>
+    <groupId>org.codehaus.mojo</groupId>
+    <artifactId>build-helper-maven-plugin</artifactId>
+    <version>1.8</version>
+   <executions>
+     <execution>
+       <id>add-test-source</id>
+       <phase>generate-test-sources</phase>
+       <goals>
+         <goal>add-test-source</goal>
+       </goals>
+       <configuration>
+          <sources>
+            <source>${targetFolder}</source>
+          </sources>
+       </configuration>
+    </execution>
+  </executions>
+</plugin>
+% mvn test // 运行test
+
+== 为了避免human written testcase是against instrumented version of class,在pom.xml里加initializing listener for EvoSuite tests. （under <build> part)
+<plugin>
+   <groupId>org.apache.maven.plugins</groupId>
+   <artifactId>maven-surefire-plugin</artifactId>
+   <version>2.17</version>
+   <configuration>
+     <properties>
+       <property>
+          <name>listener</name>
+          <value>org.evosuite.runtime.InitializingListener</value>
+      </property>
+     </properties>
+  </configuration>
+</plugin>
+
+
+===================== 3. Running Experiment =====================
+-- 拿到csv
+% wget http://evosuite.org/files/tutorial/Tutorial_Experiments.zip
+% unzip Tutorial_Experiments.zip
+% cd Tutorial_Experiments
+% mvn compile
+% mvn dependency:copy-dependencies -DincludeScope=runtime
+% java -jar $EVOSUITE -setup target/classes target/dependency/commons-collections-3.2.2.jar
+-- 确认evosuite.properties第一行classpath对的，是CP=target/classes:target/dependency/commons-collections-3.2.2.jar
+-- 收集数据
+% java -jar $EVOSUITE -class tutorial.Person
+-- 数据在evosuite-report/statistics.csv （第二行是coverage criteria, 第三行coverage percent,满分1)
+-- example with other criteria
+% java -jar $EVOSUITE -class tutorial.Company -criterion line
+
+-- stats增加更多col
+% java -jar $EVOSUITE -class tutorial.Company -criterion branch -Doutput_variables=TARGET_CLASS,criterion,Size,Length,MutationScore
+
+-- 对所有的class
+% java -jar $EVOSUITE -criterion branch -prefix tutorial -Doutput_variables=TARGET_CLASS,criterion,Size,Length,MutationScore
+% java -jar $EVOSUITE -Dconfiguration_id=Branch -criterion branch -prefix tutorial -Doutput_variables=configuration_id,TARGET_CLASS,criterion,Size,Length,MutationScore
+% java -jar $EVOSUITE -Dconfiguration_id=Default -prefix tutorial -Doutput_variables=configuration_id,TARGET_CLASS,criterion,Size,Length,MutationScore
+
+=== 因为每次都是随机的，建议多跑几次 (e.g: 5 times)
+
+--- 每个second都记录一下stats (search_budget=30)
+$EVOSUITE -class tutorial.ATM -criterion branch  -Doutput_variables=TARGET_CLASS,BranchCoverage,CoverageTimeline -Dtimeline_interval=1000 -Dsearch_budget=30
